@@ -1,8 +1,8 @@
 import sys
+import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from config import PATHS
 
-import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 os.environ['GLOG_minloglevel'] = '2'
 

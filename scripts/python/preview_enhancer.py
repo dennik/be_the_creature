@@ -1,10 +1,10 @@
 import sys
+import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from config import PATHS
 
 import mediapipe_landmarks
 import cv2
-import os
 import subprocess
 import time
 

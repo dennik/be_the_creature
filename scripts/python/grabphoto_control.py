@@ -1,5 +1,5 @@
-import os
 import sys
+import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from config import PATHS
 
@@ -53,7 +53,7 @@ capture_lock = threading.Lock()
 TARGET_MONITOR_WIDTH = 800
 TARGET_MONITOR_HEIGHT = 1280
 
-COUNTER_FILE = os.path.join(BASE_DIR, 'user_counter.txt')
+COUNTER_FILE = os.path.join(PATHS['SCRIPTS_PYTHON'], 'user_counter.txt')
 
 def load_user_counter():
     if os.path.exists(COUNTER_FILE):

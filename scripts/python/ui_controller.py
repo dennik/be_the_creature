@@ -1,4 +1,5 @@
 import sys
+import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from config import PATHS
 
@@ -6,7 +7,6 @@ import queue
 import cv2
 import numpy as np
 import time
-import os
 import subprocess
 import mediapipe_landmarks
 from preview_enhancer import PreviewEnhancer

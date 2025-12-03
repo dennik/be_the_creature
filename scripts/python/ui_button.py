@@ -1,9 +1,9 @@
 import sys
+import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from config import PATHS
 
 import cv2
-import os
 import time
 import pygame
 
@@ -21,7 +21,6 @@ class Button:
         self.anim_phase = -1
         self.anim_start = 0
         self.current_scale = 1.0
-        script_dir = os.path.dirname(os.path.abspath(__file__))
         soundclips_dir = PATHS['SOUNDCLIPS']
         self.sound_path = os.path.join(soundclips_dir, 'button.mp3')
 

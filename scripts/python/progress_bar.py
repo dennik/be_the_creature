@@ -1,10 +1,10 @@
 import sys
+import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from config import PATHS
 
 import cv2
 import numpy as np
-import os
 
 FRAME_DIR = PATHS['UI_BAR']
 FRAME_PATTERN = "ui_bar{:03d}.png"

@@ -1,0 +1,2 @@
+python grabphoto_control.py
+pause

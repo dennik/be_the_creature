@@ -203,17 +203,25 @@ def capture_photos():
     subprocess.Popen(["python", "eye_color_detector.py", str(user_id), photos_dir])
     subprocess.Popen(["python", "facial_hair_detector.py", str(user_id), photos_dir])
 
-    subprocess.Popen(["python", "realityscan_processor.py", str(user_id)])
-
+    # UPDATED: Launch with stdout piping for progress monitoring
+    processor_process = subprocess.Popen(
+        ["python", "realityscan_processor.py", str(user_id)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        universal_newlines=True
+    )
 
     if DEBUG_TIMING:
         det_duration = time.time() - det_start
-        print(f"Detectors start (non-blocking): {det_duration:.2f}s", flush=True)
+        print(f"Detectors and processor start (non-blocking): {det_duration:.2f}s", flush=True)
 
     if DEBUG_TIMING:
         duration = time.time() - start_time
         print(f"Capture photos total: {duration:.2f}s", flush=True)
-    return user_id
+    
+    # UPDATED: Return process for UI monitoring
+    return user_id, processor_process
 
 def release_cameras():
     for _, cap in cameras:

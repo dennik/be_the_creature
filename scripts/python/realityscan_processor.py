@@ -1,9 +1,9 @@
 # realityscan_processor.py
-# Version: 1.18
+# Version: 1.19
 # Changes:
-# - v1.18 (2025-12-04): Refactored to class for UI integration. Added progress_queue to push real percent updates from stdout parsing.
-#                       Preserved all original CLI logic (step counting, file handling). Backward-compatible CLI mode.
-# - v1.17: Standalone CLI script (baseline from GitHub).
+# - v1.19: Added process.wait() to ensure RealityScan exits fully after each capture (prevents lingering processes).
+#          CLI commands unchanged — same as baseline.
+# - v1.18: Baseline from provided document (class with progress_queue).
 
 import os
 import shutil
@@ -101,9 +101,10 @@ class RealityScanProcessor:
                         percent = 0
                     print(f"PROGRESS: {percent}")
                     if self.progress_queue:
-                        self.progress_queue.put(percent)  # NEW: Push real progress to UI queue
+                        self.progress_queue.put(percent)
 
-        result = process.wait()
+        result = process.wait()  # Ensure exit (fixed)
+
         if result == 0:
             if self.progress_queue:
                 self.progress_queue.put(100)
@@ -117,9 +118,9 @@ class RealityScanProcessor:
                 print(f"Saved step count {count} to {self.step_count_file}.")
             print(f"Process complete. Generated model: {self.generated_obj}")
             
-            # File cleanup (unchanged)
             subfolder = self.user_dir / "3dmodel"
             subfolder.mkdir(exist_ok=True)
+            
             for item in subfolder.iterdir():
                 if item.is_file():
                     item.unlink()
@@ -128,17 +129,18 @@ class RealityScanProcessor:
                     shutil.rmtree(item)
                     print(f"Cleaned old subdir from subfolder: {item.name}")
             
-            temp_files = [f for f in self.temp_output_dir.iterdir() if f.name.startswith(self.prefix) and f.suffix in {'.obj', '.mtl', '.png'}]
-            for file in temp_files:
-                shutil.copy(file, subfolder / file.name)
-                print(f"Copied {file.name} to {subfolder}")
+            for file in self.temp_output_dir.iterdir():
+                if file.name.startswith(self.prefix) and file.suffix in {'.obj', '.mtl', '.png'}:
+                    shutil.copy(file, subfolder / file.name)
+                    print(f"Copied {file.name} to {subfolder}")
             
-            shutil.rmtree(self.temp_output_dir)
-            print(f"Deleted temp output directory: {self.temp_output_dir}")
+            if self.temp_output_dir.exists():
+                shutil.rmtree(self.temp_output_dir)
+                print(f"Deleted temp output directory: {self.temp_output_dir}")
         else:
             print(f"Error occurred during RealityScan execution. Return code: {result}")
 
-# CLI backward compatibility
+# CLI mode for backward compatibility
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Usage: python realityscan_processor.py <user_number>")

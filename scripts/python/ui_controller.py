@@ -1,6 +1,7 @@
 # ui_controller.py
-# Version: 1.54
+# Version: 1.55
 # Changes:
+# - v1.55 (2025-12-04): Fixed progress bar to show up to 100% by changing min(99) to min(100). Moved bar and number draw before >=100 check to ensure 100% is displayed before sound playback. Added UI update loops during sound wait and post-sound delay to prevent freezing and handle quit key. This ensures progress reaches and shows 100% before auto-return, and bar disappears before reset to 0.
 # - v1.54 (2025-12-04): Fixed skipping capture preview for subsequent users by expanding resets in _return_to_creature_select: added resets for capture_thread, capture_start_time, capture_pressed, capture_initiated, capture_complete, and face_detected (to ensure alignment check and button press are required every time). This enforces the full cycle: creature selection → capture preview (with alignment, voice prompt for button press) → user presses capture → photos → photogrammetry for EVERY user.
 # - v1.53: Baseline from provided document (completion sound + auto-return).
 
@@ -166,7 +167,6 @@ class UIController:
         self.face_detected = False  # Reset to require new alignment check
         self.user_id = None
         self.processor = None
-        self.current_progress = 0
         self.completed_sound_played = False
         self.last_creature_reminder = 0  # Reset to trigger prompt if face detected
         self.last_capture_reminder = 0  # Reset to trigger prompt on capture screen
@@ -176,6 +176,7 @@ class UIController:
                 self.progress_queue.get_nowait()
             except queue.Empty:
                 break
+        self.current_progress = 0
         self.current_msg = None
 
     def start_processing_phase(self, user_id):
@@ -297,6 +298,20 @@ class UIController:
                 except queue.Empty:
                     pass
 
+                # Draw bar and number before checking for completion
+                frame_idx = min(self.current_progress, 100)
+                if self.bar_frames:
+                    current_frame = self.bar_frames[frame_idx - 1] if frame_idx > 0 else None  # Adjust for 1-indexed frames; None for 0
+                    if current_frame is not None:
+                        overlay_transparent(full_img, current_frame, self.bar_x, self.bar_y)
+                percent = self.current_progress
+                if percent > 0:
+                    text = str(percent)
+                    new_w = int(DIGIT_WIDTH * self.number_scale)
+                    total_w = len(text) * new_w + (len(text) - 1) * self.number_gap
+                    numbers_pos = (self.bar_x + (self.bar_w - total_w) // 2, self.bar_y - 20 - self.number_h)
+                    draw_number(full_img, percent, pos=numbers_pos, scale=self.number_scale)
+
                 if self.current_progress >= 100 and not self.completed_sound_played:
                     self.completed_sound_played = True
                     sound_path = os.path.join(PATHS['SOUNDCLIPS'], "your_creature_has_been_generated.mp3")
@@ -304,20 +319,40 @@ class UIController:
                         pygame.mixer.music.load(sound_path)
                         pygame.mixer.music.play()
                         while pygame.mixer.music.get_busy():
-                            time.sleep(0.1)
-                    time.sleep(2.0)
-                    self._return_to_creature_select()
+                            # Update UI during sound playback
+                            full_img_temp = full_img.copy()  # Reuse or redraw if needed
+                            self._handle_fade()
+                            if self.current_msg:
+                                self._draw_text(full_img_temp, self.current_msg,
+                                               pos=(self.button_margin, self.button_margin + 30))
+                            self._overlay_frame(full_img_temp)
+                            self.current_frame = full_img_temp.copy()
+                            cv2.imshow(self.window_name, full_img_temp)
+                            key = cv2.waitKey(1) & 0xFF
+                            if key == ord('q'):
+                                self.quit_flag = True
+                                break
+                            time.sleep(0.05)
 
-                frame_idx = min(self.current_progress, 99)
-                if self.bar_frames:
-                    current_frame = self.bar_frames[frame_idx]
-                    overlay_transparent(full_img, current_frame, self.bar_x, self.bar_y)
-                percent = self.current_progress
-                text = str(percent)
-                new_w = int(DIGIT_WIDTH * self.number_scale)
-                total_w = len(text) * new_w + (len(text) - 1) * self.number_gap
-                numbers_pos = (self.bar_x + (self.bar_w - total_w) // 2, self.bar_y - 20 - self.number_h)
-                draw_number(full_img, percent, pos=numbers_pos, scale=self.number_scale)
+                    # Post-sound delay with UI updates
+                    end_time = time.time() + 2.0
+                    while time.time() < end_time and not self.quit_flag:
+                        full_img_temp = full_img.copy()
+                        self._handle_fade()
+                        if self.current_msg:
+                            self._draw_text(full_img_temp, self.current_msg,
+                                           pos=(self.button_margin, self.button_margin + 30))
+                        self._overlay_frame(full_img_temp)
+                        self.current_frame = full_img_temp.copy()
+                        cv2.imshow(self.window_name, full_img_temp)
+                        key = cv2.waitKey(1) & 0xFF
+                        if key == ord('q'):
+                            self.quit_flag = True
+                            break
+                        time.sleep(0.05)
+
+                    if not self.quit_flag:
+                        self._return_to_creature_select()
 
             active_buttons = self.creature_buttons if self.screen == "creature_select" else self.capture_buttons if self.screen == "capture" else self.processing_buttons
             for btn in active_buttons:

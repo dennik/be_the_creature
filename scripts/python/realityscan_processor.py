@@ -1,6 +1,9 @@
 # realityscan_processor.py
-# Version: 1.19
+# Version: 1.24
 # Changes:
+# - v1.24 (2025-12-04): To ensure progress always reaches 100 before completion (for visual purposes, even if count < total_steps), added a check after the loop: if current percent <100, explicitly put(100) before final put(100). Retained existing final put(100) for redundancy.
+# - v1.23: Added filtering to suppress printing ONNX Runtime warnings (lines containing "[W:onnxruntime:") to CMD, preventing flooding while still processing all lines for progress. This keeps the console clean without affecting functionality or progress parsing.
+# - v1.22: Updated progress reporting to specifically count lines containing "#progress" (case-insensitive), based on user-provided knowledge of 156 such outputs in total for these settings. Hardcoded total_steps to 156 for accurate percentage calculation (percent = min(100, int((count / 156) * 100))). Removed "%" check from condition for precision. Retained count_mode to optionally verify and save the count, but defaults to 156 if file missing.
 # - v1.19: Added process.wait() to ensure RealityScan exits fully after each capture (prevents lingering processes).
 #          CLI commands unchanged — same as baseline.
 # - v1.18: Baseline from provided document (class with progress_queue).
@@ -52,11 +55,11 @@ class RealityScanProcessor:
                 with open(self.step_count_file, 'r') as f:
                     total_steps = int(f.read().strip())
             except:
-                print(f"Error loading {self.step_count_file}; using default 80.")
-                total_steps = 80
+                print(f"Error loading {self.step_count_file}; using known total 156.")
+                total_steps = 156
         else:
-            total_steps = 80
-            print(f"First run: Counting steps; will save to {self.step_count_file}.")
+            total_steps = 156
+            print(f"First run: Counting #progress reports; will save to {self.step_count_file} (expected ~156).")
 
         command = [
             self.rs_path,
@@ -88,12 +91,15 @@ class RealityScanProcessor:
 
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         count = 0
+        last_percent = 0
 
         while process.poll() is None:
             line = process.stdout.readline().strip()
             if line:
-                print(line)
-                if "progress" in line.lower() or "%" in line:
+                # Filter out ONNX Runtime warnings to prevent CMD flooding
+                if "[W:onnxruntime:" not in line:
+                    print(line)
+                if "#progress" in line.lower():
                     count += 1
                     if total_steps > 0:
                         percent = min(100, int((count / total_steps) * 100))
@@ -102,6 +108,13 @@ class RealityScanProcessor:
                     print(f"PROGRESS: {percent}")
                     if self.progress_queue:
                         self.progress_queue.put(percent)
+                    last_percent = percent
+
+        # Force to 100 if not already (visual fix)
+        if last_percent < 100:
+            if self.progress_queue:
+                self.progress_queue.put(100)
+            print("PROGRESS: 100 (forced for completion)")
 
         result = process.wait()  # Ensure exit (fixed)
 
@@ -111,11 +124,11 @@ class RealityScanProcessor:
             print("PROGRESS: 100")
             if count_mode:
                 if count == 0:
-                    print("Warning: No progress steps detected; using default 80.")
-                    count = 80
+                    print("Warning: No #progress reports detected; using known total 156.")
+                    count = 156
                 with open(self.step_count_file, 'w') as f:
                     f.write(str(count))
-                print(f"Saved step count {count} to {self.step_count_file}.")
+                print(f"Saved #progress count {count} to {self.step_count_file}.")
             print(f"Process complete. Generated model: {self.generated_obj}")
             
             subfolder = self.user_dir / "3dmodel"

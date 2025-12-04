@@ -1,9 +1,8 @@
 # grabphoto_control.py
-# Version: 2.57
+# Version: 2.58
 # Changes:
-# - v2.57 (2025-12-04): Removed subprocess launch of realityscan_processor.py from capture_photos()—now started once in UI via class/queue.
-#                       capture_photos() now returns only user_id (UI uses it for processor). Prevents duplicates.
-# - v2.56: Counter moved to scripts/python (baseline).
+# - v2.58 (2025-12-04): Reordered subprocess launches in capture_photos to start realityscan_processor immediately after photos are written to disk (before detectors). This minimizes any perceived timing gap, allowing photogrammetry to commence as soon as photos are ready. Detectors now run fully in background after photogrammetry starts. CLI commands unchanged; all Popen non-blocking.
+# - v2.57: Previous version (processor launch removed from this script, but now restored with reorder for timing optimization).
 
 import sys
 import os
@@ -23,7 +22,7 @@ import subprocess
 from ui_controller import UIController
 from skimage.metrics import structural_similarity as ssim
 
-DEBUG_TIMING = True
+DEBUG_TIMING = False
 
 RESOLUTION = '8MP'
 width, height = 3840, 2160

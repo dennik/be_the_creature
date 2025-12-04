@@ -1,3 +1,4 @@
 /photogrammetry
 *.psd
 scripts/python/user_counter.txt
+/scripts/python/__pycache__

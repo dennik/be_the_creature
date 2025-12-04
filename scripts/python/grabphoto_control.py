@@ -1,3 +1,10 @@
+# grabphoto_control.py
+# Version: 2.57
+# Changes:
+# - v2.57 (2025-12-04): Removed subprocess launch of realityscan_processor.py from capture_photos()—now started once in UI via class/queue.
+#                       capture_photos() now returns only user_id (UI uses it for processor). Prevents duplicates.
+# - v2.56: Counter moved to scripts/python (baseline).
+
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -53,16 +60,17 @@ capture_lock = threading.Lock()
 TARGET_MONITOR_WIDTH = 800
 TARGET_MONITOR_HEIGHT = 1280
 
-COUNTER_FILE = os.path.join(PATHS['SCRIPTS_PYTHON'], 'user_counter.txt')
+# Counter file in scripts/python (safe from .gitignore)
+COUNTER_FILE_PATH = os.path.join(PATHS['SCRIPTS_PYTHON'], 'user_counter.txt')
 
 def load_user_counter():
-    if os.path.exists(COUNTER_FILE):
-        with open(COUNTER_FILE, 'r') as f:
+    if os.path.exists(COUNTER_FILE_PATH):
+        with open(COUNTER_FILE_PATH, 'r') as f:
             return int(f.read().strip())
     return 0
 
 def save_user_counter(user_id):
-    with open(COUNTER_FILE, 'w') as f:
+    with open(COUNTER_FILE_PATH, 'w') as f:
         f.write(str(user_id))
 
 def get_monitor_rects():
@@ -174,6 +182,8 @@ def capture_photos():
     photos_dir = os.path.join(user_dir, 'photos')
     os.makedirs(photos_dir, exist_ok=True)
 
+    print(f"Capturing photos for user_{user_id} → {photos_dir}")
+
     def capture_group(camera_list, lock):
         for i, cap in camera_list:
             cam_start = time.time()
@@ -202,26 +212,17 @@ def capture_photos():
     det_start = time.time()
     subprocess.Popen(["python", "eye_color_detector.py", str(user_id), photos_dir])
     subprocess.Popen(["python", "facial_hair_detector.py", str(user_id), photos_dir])
-
-    # UPDATED: Launch with stdout piping for progress monitoring
-    processor_process = subprocess.Popen(
-        ["python", "realityscan_processor.py", str(user_id)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        universal_newlines=True
-    )
+    # REMOVED: No processor launch here—UI handles via class/queue
 
     if DEBUG_TIMING:
         det_duration = time.time() - det_start
-        print(f"Detectors and processor start (non-blocking): {det_duration:.2f}s", flush=True)
+        print(f"Detectors start (non-blocking): {det_duration:.2f}s", flush=True)
 
     if DEBUG_TIMING:
         duration = time.time() - start_time
         print(f"Capture photos total: {duration:.2f}s", flush=True)
     
-    # UPDATED: Return process for UI monitoring
-    return user_id, processor_process
+    return user_id  # NEW: Return user_id for UI to start processor
 
 def release_cameras():
     for _, cap in cameras:
@@ -262,7 +263,13 @@ def main():
             print(f"Ready sound playback: {sound_duration:.2f}s", flush=True)
 
         loop_start = time.time()
-        ui.start_preview_loop(preview_cap=preview_cap, on_capture=capture_photos)
+
+        def on_capture_wrapper():
+            user_id = capture_photos()
+            ui.user_id = user_id  # NEW: Set for UI processing
+            return user_id
+
+        ui.start_preview_loop(preview_cap=preview_cap, on_capture=on_capture_wrapper)
         if DEBUG_TIMING:
             loop_duration = time.time() - loop_start
             print(f"Preview loop ran for: {loop_duration:.2f}s", flush=True)

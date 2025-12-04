@@ -4,3 +4,4 @@ scripts/python/user_counter.txt
 /scripts/python/__pycache__
 *.pyc
 /scripts/python/__pycache__
+scripts/python/user_counter.txt

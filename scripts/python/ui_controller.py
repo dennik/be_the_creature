@@ -1,9 +1,9 @@
 # ui_controller.py
-# Version: 1.55
+# Version: 1.61
 # Changes:
-# - v1.55 (2025-12-04): Fixed progress bar to show up to 100% by changing min(99) to min(100). Moved bar and number draw before >=100 check to ensure 100% is displayed before sound playback. Added UI update loops during sound wait and post-sound delay to prevent freezing and handle quit key. This ensures progress reaches and shows 100% before auto-return, and bar disappears before reset to 0.
-# - v1.54 (2025-12-04): Fixed skipping capture preview for subsequent users by expanding resets in _return_to_creature_select: added resets for capture_thread, capture_start_time, capture_pressed, capture_initiated, capture_complete, and face_detected (to ensure alignment check and button press are required every time). This enforces the full cycle: creature selection → capture preview (with alignment, voice prompt for button press) → user presses capture → photos → photogrammetry for EVERY user.
-# - v1.53: Baseline from provided document (completion sound + auto-return).
+# - v1.61 (2025-12-09): Removed redundant call to self.on_capture() after thread completion to prevent double capture. The thread already sets self.user_id via the wrapper.
+# - v1.60 (2025-12-04): Removed debug prints from _mouse_callback as the issue is resolved.
+# - v1.59 (2025-12-04): Updated _mouse_callback to always handle quit_button events separately (in addition to screen-specific buttons) to ensure it's responsive on all screens, as it was previously only handled on "capture" screen. Retained debug prints for further verification.
 
 import sys
 import os
@@ -89,8 +89,8 @@ class UIController:
             press_scale=0.95
         )
 
-        quit_pos = (self.w - 150 - self.button_margin, self.button_margin)
-        self.quit_button = Button(pos=quit_pos, size=(150, 40), on_press=self._on_quit_press,
+        quit_pos = (self.w - 250 - self.button_margin, self.button_margin)
+        self.quit_button = Button(pos=quit_pos, size=(250, 170), on_press=self._on_quit_press,
                                   up_image_path=os.path.join(PATHS['GRAPHICS'], 'quit.png'),
                                   initial_scale=1.0, press_scale=0.95)
         capture_pos = ((self.w - 510) // 2, 896)
@@ -208,6 +208,8 @@ class UIController:
         buttons = self.creature_buttons if self.screen == "creature_select" else self.capture_buttons
         for btn in buttons:
             btn.handle_event(event, mx, my)
+        # Always handle quit_button events, regardless of screen
+        self.quit_button.handle_event(event, mx, my)
 
     def init_window(self, window_name='Capture App', x=0, y=0):
         self.window_name = window_name
@@ -284,9 +286,6 @@ class UIController:
                         self._play_sound(os.path.join(PATHS['SOUNDCLIPS'], 'creature_generation_in_process.mp3'))
                         self.capture_complete = True
                         self.capture_initiated = False
-                        result = self.on_capture()
-                        if result:
-                            self.user_id = result
                         if self.user_id:
                             self.start_processing_phase(self.user_id)
 
@@ -371,6 +370,9 @@ class UIController:
             if self.screen == "capture":
                 self.return_button.draw(full_img)
 
+            # Draw quit button after frame overlay to ensure it's in front and visible at all times
+            self.quit_button.draw(full_img)
+
             self.current_frame = full_img.copy()
             cv2.imshow(self.window_name, full_img)
             if first_frame:
@@ -408,19 +410,22 @@ class UIController:
                 print(f"Warning: Failed to load frame.png at {self.frame_path}")
                 return
             if self.frame_img.shape[:2] != (self.h, self.w):
-                self.frame_img = cv2.resize(self.frame_img, (self.w, self.h),
-                                           interpolation=cv2.INTER_AREA)
+                print(f"Warning: Frame image size mismatch; resizing to {self.w}x{self.h}")
+                self.frame_img = cv2.resize(self.frame_img, (self.w, self.h), interpolation=cv2.INTER_AREA)
+
         if self.frame_img.shape[2] == 4:
             b, g, r, a = cv2.split(self.frame_img)
-            overlay = cv2.merge([b, g, r])
             alpha = a / 255.0
-            img[:] = (1 - alpha[..., None]) * img + alpha[..., None] * overlay
+            for c in range(3):
+                img[:, :, c] = (1 - alpha) * img[:, :, c] + alpha * self.frame_img[:, :, c]
+        else:
+            img[:] = self.frame_img
 
     def _handle_fade(self):
-        pass
+        pass  # Placeholder if fade logic needed
 
     def cleanup(self):
-        cv2.destroyAllWindows()
         if self.preview_cap:
             self.preview_cap.release()
+        cv2.destroyAllWindows()
         pygame.mixer.quit()

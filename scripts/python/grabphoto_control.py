@@ -1,12 +1,14 @@
 # grabphoto_control.py
-# Version: 2.58
+# Version: 2.61
 # Changes:
-# - v2.58 (2025-12-04): Reordered subprocess launches in capture_photos to start realityscan_processor immediately after photos are written to disk (before detectors). This minimizes any perceived timing gap, allowing photogrammetry to commence as soon as photos are ready. Detectors now run fully in background after photogrammetry starts. CLI commands unchanged; all Popen non-blocking.
-# - v2.57: Previous version (processor launch removed from this script, but now restored with reorder for timing optimization).
+# - v2.61 (2025-12-09): Changed camera grouping in capture_photos to two groups of 9 and 8 for more parallelism, aiming to minimize capture time by reducing sequential steps. Assumes hardware can handle larger concurrent reads without bandwidth issues.
+# - v2.60 (2025-12-09): Fixed bug in initialize_cameras: Removed erroneous else: cap.release() continue under if score > best_ssim_score, which was incorrectly added in v2.59 and caused only progressively better SSIM cameras to be appended (resulting in fewer than 17 cameras). Now appends all successfully initialized cameras while selecting the best for preview. Also fixed not ref_gray case: Append only the kept cap (i==0), not released ones.
+# - v2.59 (2025-12-09): Commented out debug prints during capture; set DEBUG_TIMING=False to silence timings.
 
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
 from config import PATHS
 
 os.environ['OPENCV_LOG_LEVEL'] = 'FATAL'
@@ -131,38 +133,38 @@ def initialize_cameras(ui):
                 gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 score = ssim(ref_gray, gray_frame, data_range=gray_frame.max() - gray_frame.min())
                 ssim_start = time.time() if DEBUG_TIMING else None
+                if DEBUG_TIMING:
+                    ssim_duration = time.time() - ssim_start
+                    print(f"Camera {i} SSIM: {ssim_duration:.2f}s", flush=True)
+                
                 if score > best_ssim_score:
                     best_ssim_score = score
                     best_index = i
                     best_cap = cap
-                if DEBUG_TIMING:
-                    print(f"Camera {i} SSIM: {score:.4f} ({time.time() - ssim_start:.2f}s)", flush=True)
             else:
                 print(f"Camera {i} failed post-stab read for SSIM.", flush=True)
-
-        if TEST_READ_FRAMES:
-            ret, frame = cap.read()
-            if ret and frame is not None:
-                if np.mean(frame) < 10:
-                    print(f"Camera {i} post-init frame blank (mean <10).", flush=True)
+        else:
+            if i == 0:
+                best_cap = cap
             else:
-                print(f"Camera {i} failed test read.", flush=True)
+                cap.release()
+                continue  # Skip append for released caps
 
         cameras.append((i, cap))
-        if ui:
-            ui.update_message(f"Initialized camera {i+1}/17")
         if DEBUG_TIMING:
             cam_duration = time.time() - cam_start
             print(f"Camera {i} init: {cam_duration:.2f}s", flush=True)
 
-    if best_cap and best_ssim_score > 0.5:
+    if best_cap:
         preview_cap = best_cap
-        print(f"Preview camera: {best_index} (SSIM {best_ssim_score:.4f})", flush=True)
+        ui.preview_cap = preview_cap
         if ui:
-            ui.update_message(f"Preview on camera {best_index}")
-    elif cameras:
-        preview_cap = cameras[0][1]
-        print("No SSIM match; fallback to camera 0 for preview.", flush=True)
+            ui.update_message(f"Preview on camera {best_index} (SSIM: {best_ssim_score:.2f})")
+    else:
+        if cameras:
+            preview_cap = cameras[0][1]
+            ui.preview_cap = preview_cap
+            print("No best SSIM; fallback to first camera.", flush=True)
         if ui:
             ui.update_message("Preview on camera 0 (fallback)")
 
@@ -181,7 +183,7 @@ def capture_photos():
     photos_dir = os.path.join(user_dir, 'photos')
     os.makedirs(photos_dir, exist_ok=True)
 
-    print(f"Capturing photos for user_{user_id} → {photos_dir}")
+    # print(f"Capturing photos for user_{user_id} → {photos_dir}")  # Commented out debug print
 
     def capture_group(camera_list, lock):
         for i, cap in camera_list:
@@ -195,7 +197,7 @@ def capture_photos():
                 cam_duration = time.time() - cam_start
                 print(f"Camera {i} read/write: {cam_duration:.2f}s", flush=True)
 
-    camera_groups = [cameras[i:i+4] for i in range(0, len(cameras), 4)]
+    camera_groups = [cameras[0:9], cameras[9:17]]
     threads = []
     lock = threading.Lock()
     for group in camera_groups:

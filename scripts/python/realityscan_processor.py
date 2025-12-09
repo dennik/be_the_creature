@@ -1,12 +1,9 @@
 # realityscan_processor.py
-# Version: 1.24
+# Version: 1.26
 # Changes:
+# - v1.26 (2025-12-09): Added -setReconstructionRegionAuto after -align to tighten reconstruction box around user. Commented out debug/console prints during session (retained queue.put and essential errors).
+# - v1.25 (2025-12-09): Simplified CLI commands per user request: Removed -generateAIMasks, -setReconstructionRegionAuto, -selectMaximalComponent, -cleanModel, -save. Direct export to 3dmodel (no temp_output). Moved pre-clean to before Popen. This speeds up processing by skipping non-essential steps.
 # - v1.24 (2025-12-04): To ensure progress always reaches 100 before completion (for visual purposes, even if count < total_steps), added a check after the loop: if current percent <100, explicitly put(100) before final put(100). Retained existing final put(100) for redundancy.
-# - v1.23: Added filtering to suppress printing ONNX Runtime warnings (lines containing "[W:onnxruntime:") to CMD, preventing flooding while still processing all lines for progress. This keeps the console clean without affecting functionality or progress parsing.
-# - v1.22: Updated progress reporting to specifically count lines containing "#progress" (case-insensitive), based on user-provided knowledge of 156 such outputs in total for these settings. Hardcoded total_steps to 156 for accurate percentage calculation (percent = min(100, int((count / 156) * 100))). Removed "%" check from condition for precision. Retained count_mode to optionally verify and save the count, but defaults to 156 if file missing.
-# - v1.19: Added process.wait() to ensure RealityScan exits fully after each capture (prevents lingering processes).
-#          CLI commands unchanged — same as baseline.
-# - v1.18: Baseline from provided document (class with progress_queue).
 
 import os
 import shutil
@@ -24,10 +21,8 @@ class RealityScanProcessor:
         self.user_dir = Path(user_dir)
         self.prefix = self.user_dir.name  # e.g., "user_1"
         self.photos_dir = self.user_dir / "photos"
-        self.temp_output_dir = self.user_dir / "temp_output"
-        self.project_file = self.temp_output_dir / f"{self.prefix}.rsproj"
-        self.output_base = self.temp_output_dir / self.prefix
-        self.generated_obj = f"{self.output_base}.obj"
+        self.output_dir = self.user_dir / "3dmodel"
+        self.generated_obj = self.output_dir / f"{self.prefix}.obj"
         self.progress_queue = progress_queue  # NEW: For real-time UI updates
         self.step_count_file = Path(PATHS['SCRIPTS_PYTHON']) / 'rs_step_count.txt'
         self.rs_path = r"C:\Program Files\Epic Games\RealityScan_2.0\RealityScan.exe"
@@ -35,19 +30,17 @@ class RealityScanProcessor:
         # Ensure dirs
         self.user_dir.mkdir(parents=True, exist_ok=True)
         self.photos_dir.mkdir(exist_ok=True)
-        if self.temp_output_dir.exists():
-            shutil.rmtree(self.temp_output_dir)
-        self.temp_output_dir.mkdir(exist_ok=True)
+        self.output_dir.mkdir(exist_ok=True)
 
     def start_photogrammetry(self):
         threading.Thread(target=self._run_realityscan, daemon=True).start()
 
     def _run_realityscan(self):
-        print(f"Images in {self.photos_dir}:")
-        os.system(f'dir "{self.photos_dir}\\*.jpg"')
+        # print(f"Images in {self.photos_dir}:")  # Commented out debug print
+        # os.system(f'dir "{self.photos_dir}\\*.jpg"')  # Commented out debug print
 
-        if not any(f.endswith(".jpg") for f in os.listdir(self.photos_dir)):
-            print(f"Warning: No .jpg files found in {self.photos_dir}. Proceeding anyway...")
+        # if not any(f.endswith(".jpg") for f in os.listdir(self.photos_dir)):
+        #     print(f"Warning: No .jpg files found in {self.photos_dir}. Proceeding anyway...")  # Commented out debug print
 
         count_mode = not self.step_count_file.exists()
         if not count_mode:
@@ -55,11 +48,20 @@ class RealityScanProcessor:
                 with open(self.step_count_file, 'r') as f:
                     total_steps = int(f.read().strip())
             except:
-                print(f"Error loading {self.step_count_file}; using known total 156.")
+                # print(f"Error loading {self.step_count_file}; using known total 156.")  # Commented out debug print
                 total_steps = 156
         else:
             total_steps = 156
-            print(f"First run: Counting #progress reports; will save to {self.step_count_file} (expected ~156).")
+            # print(f"First run: Counting #progress reports; will save to {self.step_count_file} (expected ~156).")  # Commented out debug print
+
+        # Clean old files in output_dir
+        for item in self.output_dir.iterdir():
+            if item.is_file():
+                item.unlink()
+                # print(f"Cleaned old file from output_dir: {item.name}")  # Commented out debug print
+            elif item.is_dir():
+                shutil.rmtree(item)
+                # print(f"Cleaned old subdir from output_dir: {item.name}")  # Commented out debug print
 
         command = [
             self.rs_path,
@@ -67,27 +69,23 @@ class RealityScanProcessor:
             "-stdConsole",
             "-printProgress",
             "-addFolder", str(self.photos_dir),
-            "-generateAIMasks",
             "-align",
             "-setReconstructionRegionAuto",
             "-set", "mvsNormalDownscaleFactor=4",
             "-set", "mvsDefaultGroupingFactor=2",
             "-calculateNormalModel",
-            "-selectMaximalComponent",
-            "-cleanModel",
             "-set", "unwrapMaxTexResolution=4096",
             "-set", "txtImageDownscaleTexture=2",
             "-calculateTexture",
-            "-exportSelectedModel", self.generated_obj,
-            "-save", str(self.project_file),
+            "-exportSelectedModel", str(self.generated_obj),
             "-quit"
         ]
 
-        print(f"Running RealityScan command: {' '.join(command)}")
+        # print(f"Running RealityScan command: {' '.join(command)}")  # Commented out debug print
 
         if self.progress_queue:
             self.progress_queue.put(0)
-        print("PROGRESS: 0")
+        # print("PROGRESS: 0")  # Commented out debug print
 
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         count = 0
@@ -98,14 +96,15 @@ class RealityScanProcessor:
             if line:
                 # Filter out ONNX Runtime warnings to prevent CMD flooding
                 if "[W:onnxruntime:" not in line:
-                    print(line)
+                    # print(line)  # Commented out debug print
+                    pass
                 if "#progress" in line.lower():
                     count += 1
                     if total_steps > 0:
                         percent = min(100, int((count / total_steps) * 100))
                     else:
                         percent = 0
-                    print(f"PROGRESS: {percent}")
+                    # print(f"PROGRESS: {percent}")  # Commented out debug print
                     if self.progress_queue:
                         self.progress_queue.put(percent)
                     last_percent = percent
@@ -114,42 +113,22 @@ class RealityScanProcessor:
         if last_percent < 100:
             if self.progress_queue:
                 self.progress_queue.put(100)
-            print("PROGRESS: 100 (forced for completion)")
+            # print("PROGRESS: 100 (forced for completion)")  # Commented out debug print
 
         result = process.wait()  # Ensure exit (fixed)
 
         if result == 0:
             if self.progress_queue:
                 self.progress_queue.put(100)
-            print("PROGRESS: 100")
+            # print("PROGRESS: 100")  # Commented out debug print
             if count_mode:
                 if count == 0:
-                    print("Warning: No #progress reports detected; using known total 156.")
+                    # print("Warning: No #progress reports detected; using known total 156.")  # Commented out debug print
                     count = 156
                 with open(self.step_count_file, 'w') as f:
                     f.write(str(count))
-                print(f"Saved #progress count {count} to {self.step_count_file}.")
-            print(f"Process complete. Generated model: {self.generated_obj}")
-            
-            subfolder = self.user_dir / "3dmodel"
-            subfolder.mkdir(exist_ok=True)
-            
-            for item in subfolder.iterdir():
-                if item.is_file():
-                    item.unlink()
-                    print(f"Cleaned old file from subfolder: {item.name}")
-                elif item.is_dir():
-                    shutil.rmtree(item)
-                    print(f"Cleaned old subdir from subfolder: {item.name}")
-            
-            for file in self.temp_output_dir.iterdir():
-                if file.name.startswith(self.prefix) and file.suffix in {'.obj', '.mtl', '.png'}:
-                    shutil.copy(file, subfolder / file.name)
-                    print(f"Copied {file.name} to {subfolder}")
-            
-            if self.temp_output_dir.exists():
-                shutil.rmtree(self.temp_output_dir)
-                print(f"Deleted temp output directory: {self.temp_output_dir}")
+                # print(f"Saved #progress count {count} to {self.step_count_file}.")  # Commented out debug print
+            # print(f"Process complete. Generated model: {self.generated_obj}")  # Commented out debug print
         else:
             print(f"Error occurred during RealityScan execution. Return code: {result}")
 

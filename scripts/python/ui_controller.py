@@ -1,9 +1,9 @@
 # ui_controller.py
-# Version: 1.61
+# Version: 1.67
 # Changes:
-# - v1.61 (2025-12-09): Removed redundant call to self.on_capture() after thread completion to prevent double capture. The thread already sets self.user_id via the wrapper.
-# - v1.60 (2025-12-04): Removed debug prints from _mouse_callback as the issue is resolved.
-# - v1.59 (2025-12-04): Updated _mouse_callback to always handle quit_button events separately (in addition to screen-specific buttons) to ensure it's responsive on all screens, as it was previously only handled on "capture" screen. Retained debug prints for further verification.
+# - v1.67 (2025-12-09): Made return to creature_select immediate by setting pending_switch with time.time() (no 0.5s delay).
+# - v1.66 (2025-12-09): Removed current_progress reset from _return_to_creature_select to prevent visual reset before screen switch. Always draw progress number, including when percent==0.
+# - v1.65 (2025-12-09): Added condition to read preview frames only during "creature_select" and "capture" screens; skips during "processing".
 
 import sys
 import os
@@ -30,9 +30,7 @@ pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
 creature_selection = None
 
 class UIController:
-
     def __init__(self, w=800, h=1280, capture_lock=None, preview_rotate=False, preview_mirror=True):
-
         self.w = w
         self.h = h
         self.preview_rotate = preview_rotate
@@ -88,7 +86,6 @@ class UIController:
             initial_scale=1.0,
             press_scale=0.95
         )
-
         quit_pos = (self.w - 250 - self.button_margin, self.button_margin)
         self.quit_button = Button(pos=quit_pos, size=(250, 170), on_press=self._on_quit_press,
                                   up_image_path=os.path.join(PATHS['GRAPHICS'], 'quit.png'),
@@ -96,14 +93,12 @@ class UIController:
         capture_pos = ((self.w - 510) // 2, 896)
         self.capture_button = Button(pos=capture_pos, size=(510, 215), on_press=self._on_capture_press,
                                      up_image_path=self.button_path, initial_scale=1.0, press_scale=0.95)
-
         self.return_button = Button(pos=(self.button_margin, self.button_margin),
                                     size=(302, 213),
                                     on_press=self._return_to_creature_select,
                                     up_image_path=self.return_path, initial_scale=1.0, press_scale=0.95)
-
         self.creature_buttons = [self.sloth_btn, self.leopard_btn, self.monkey_btn]
-        self.capture_buttons  = [self.quit_button, self.capture_button, self.return_button]
+        self.capture_buttons = [self.quit_button, self.capture_button, self.return_button]
         self.processing_buttons = []
         
         self.quit_presses = 0
@@ -114,7 +109,6 @@ class UIController:
         self.capture_initiated = False
         self.capture_complete = False
         self.capture_start_time = None
-
         self.bar_frames = []
         self.bar_frame_count = 100
         self.bar_frame_duration = 0.5
@@ -124,7 +118,6 @@ class UIController:
         self.bar_y = self.h // 2 - self.bar_h // 2
         self.progress_start_time = None
         self._load_bar_frames()
-
         self.number_scale = 0.5
         self.number_h = int(DIGIT_HEIGHT * self.number_scale)
         self.number_gap = int(GAP_PX * self.number_scale)
@@ -133,13 +126,14 @@ class UIController:
         self.processor = None
         self.progress_queue = queue.Queue()
         self.current_progress = 0
-        self.completed_sound_played = False  # Track once-only playback
+        self.completed_sound_played = False # Track once-only playback
 
     def update_message(self, msg: str):
         self.current_msg = msg
         print(f"[UI] {msg}")
 
     def _load_bar_frames(self):
+        self.bar_frames.append(np.zeros((self.bar_h, self.bar_w, 4), dtype=np.uint8))  # Add blank frame at index 0
         frame_dir = PATHS['UI_BAR']
         frame_pattern = "ui_bar{:03d}.png"
         for i in range(1, self.bar_frame_count + 1):
@@ -158,36 +152,33 @@ class UIController:
 
     def _return_to_creature_select(self):
         print("[UI] Returning to creature selection menu")
-        self.pending_switch = ("creature_select", time.time() + 0.5)
+        self.pending_switch = ("creature_select", time.time())
         # Expanded full reset to enforce same process every time
         self.capture_complete = False
         self.capture_initiated = False
-        self.capture_pressed = False  # Critical: Force waiting for new button press
-        self.capture_start_time = None  # Reset timer to require new capture
-        self.face_detected = False  # Reset to require new alignment check
+        self.capture_pressed = False # Critical: Force waiting for new button press
+        self.capture_start_time = None # Reset timer to require new capture
+        self.face_detected = False # Reset to require new alignment check
         self.user_id = None
         self.processor = None
         self.completed_sound_played = False
-        self.last_creature_reminder = 0  # Reset to trigger prompt if face detected
-        self.last_capture_reminder = 0  # Reset to trigger prompt on capture screen
-        self.capture_thread = None  # Clear any lingering thread reference
+        self.last_creature_reminder = 0 # Reset to trigger prompt if face detected
+        self.last_capture_reminder = 0 # Reset to trigger prompt on capture screen
+        self.capture_thread = None # Clear any lingering thread reference
         while not self.progress_queue.empty():
             try:
                 self.progress_queue.get_nowait()
             except queue.Empty:
                 break
-        self.current_progress = 0
         self.current_msg = None
 
     def start_processing_phase(self, user_id):
         if self.processor:
             print("[UI] Processor already running — skipping.")
             return
-
         user_dir = os.path.join(PATHS['BASE'], f"user_{user_id}")
         self.processor = RealityScanProcessor(user_dir, progress_queue=self.progress_queue)
         self.processor.start_photogrammetry()
-
         # Immediate switch to processing screen
         self.pending_switch = ("processing", time.time())
         self.update_message("Generating your creature...")
@@ -217,7 +208,6 @@ class UIController:
         cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
         cv2.moveWindow(window_name, x, y)
         cv2.setMouseCallback(window_name, self._mouse_callback)
-
         canvas = np.zeros((self.h, self.w, 3), dtype=np.uint8)
         self._overlay_frame(canvas)
         cv2.imshow(self.window_name, canvas)
@@ -226,7 +216,6 @@ class UIController:
     def start_preview_loop(self, preview_cap, on_capture):
         self.on_capture = on_capture
         self.preview_cap = preview_cap
-
         first_frame = True
         first_landmark = True
         while not self.quit_flag:
@@ -235,14 +224,12 @@ class UIController:
                 if time.time() >= switch_time:
                     self.screen = target
                     self.pending_switch = None
-
             full_img = np.zeros((self.h, self.w, 3), dtype=np.uint8)
-
             results = None
             status = None
             is_face_detected = False
             display_img = None
-            if self.preview_cap is not None:
+            if self.screen in ["creature_select", "capture"] and self.preview_cap is not None:
                 with self.capture_lock:
                     ret, frame = self.preview_cap.read()
                 if ret and frame is not None:
@@ -267,28 +254,24 @@ class UIController:
                         display_img[:, start_x:start_x + new_width] = resized
                     status = self.preview_enhancer.check_readiness(results, new_width, self.preview_height, self.w, start_x)
                     self.current_preview = display_img.copy()
-
             if self.screen == "capture":
                 if display_img is not None:
                     self.preview_enhancer.draw_readiness_border(display_img, status)
                     self.preview_enhancer.trigger_sounds(status, is_face_detected, capture_initiated=self.capture_initiated)
                     full_img[:self.preview_height, :] = display_img
-
                 if self.capture_initiated and status and status['ready']:
                     self.capture_thread = threading.Thread(target=self.on_capture)
                     self.capture_thread.start()
                     self.capture_start_time = time.time()
                     self.capture_initiated = False
-
                 if self.capture_thread and not self.capture_thread.is_alive() and not self.capture_complete:
                     current_time = time.time()
-                    if current_time >= (self.capture_start_time or 0) + 4.0:
-                        self._play_sound(os.path.join(PATHS['SOUNDCLIPS'], 'creature_generation_in_process.mp3'))
+                    if current_time >= (self.capture_start_time or 0) + 1.5:
                         self.capture_complete = True
                         self.capture_initiated = False
                         if self.user_id:
                             self.start_processing_phase(self.user_id)
-
+                        self._play_sound(os.path.join(PATHS['SOUNDCLIPS'], 'creature_generation_in_process.mp3'))
             if self.screen == "processing":
                 try:
                     while True:
@@ -296,21 +279,17 @@ class UIController:
                         self.current_progress = latest
                 except queue.Empty:
                     pass
-
                 # Draw bar and number before checking for completion
-                frame_idx = min(self.current_progress, 100)
+                frame_idx = max(min(self.current_progress, 100), 1) if self.current_progress == 0 else min(self.current_progress, 100)
                 if self.bar_frames:
-                    current_frame = self.bar_frames[frame_idx - 1] if frame_idx > 0 else None  # Adjust for 1-indexed frames; None for 0
-                    if current_frame is not None:
-                        overlay_transparent(full_img, current_frame, self.bar_x, self.bar_y)
+                    current_frame = self.bar_frames[frame_idx]
+                    overlay_transparent(full_img, current_frame, self.bar_x, self.bar_y)
                 percent = self.current_progress
-                if percent > 0:
-                    text = str(percent)
-                    new_w = int(DIGIT_WIDTH * self.number_scale)
-                    total_w = len(text) * new_w + (len(text) - 1) * self.number_gap
-                    numbers_pos = (self.bar_x + (self.bar_w - total_w) // 2, self.bar_y - 20 - self.number_h)
-                    draw_number(full_img, percent, pos=numbers_pos, scale=self.number_scale)
-
+                text = str(percent)
+                new_w = int(DIGIT_WIDTH * self.number_scale)
+                total_w = len(text) * new_w + (len(text) - 1) * self.number_gap
+                numbers_pos = (self.bar_x + (self.bar_w - total_w) // 2, self.bar_y - 20 - self.number_h)
+                draw_number(full_img, percent, pos=numbers_pos, scale=self.number_scale)
                 if self.current_progress >= 100 and not self.completed_sound_played:
                     self.completed_sound_played = True
                     sound_path = os.path.join(PATHS['SOUNDCLIPS'], "your_creature_has_been_generated.mp3")
@@ -319,7 +298,7 @@ class UIController:
                         pygame.mixer.music.play()
                         while pygame.mixer.music.get_busy():
                             # Update UI during sound playback
-                            full_img_temp = full_img.copy()  # Reuse or redraw if needed
+                            full_img_temp = full_img.copy() # Reuse or redraw if needed
                             self._handle_fade()
                             if self.current_msg:
                                 self._draw_text(full_img_temp, self.current_msg,
@@ -332,7 +311,6 @@ class UIController:
                                 self.quit_flag = True
                                 break
                             time.sleep(0.05)
-
                     # Post-sound delay with UI updates
                     end_time = time.time() + 2.0
                     while time.time() < end_time and not self.quit_flag:
@@ -349,35 +327,27 @@ class UIController:
                             self.quit_flag = True
                             break
                         time.sleep(0.05)
-
                     if not self.quit_flag:
                         self._return_to_creature_select()
-
             active_buttons = self.creature_buttons if self.screen == "creature_select" else self.capture_buttons if self.screen == "capture" else self.processing_buttons
             for btn in active_buttons:
                 if btn != self.return_button and btn != self.capture_button:
                     btn.draw(full_img)
                 elif btn == self.capture_button:
                     btn.draw(full_img)
-
             self._handle_fade()
             if self.current_msg:
                 self._draw_text(full_img, self.current_msg,
                                pos=(self.button_margin, self.button_margin + 30))
-
             self._overlay_frame(full_img)
-
             if self.screen == "capture":
                 self.return_button.draw(full_img)
-
             # Draw quit button after frame overlay to ensure it's in front and visible at all times
             self.quit_button.draw(full_img)
-
             self.current_frame = full_img.copy()
             cv2.imshow(self.window_name, full_img)
             if first_frame:
                 first_frame = False
-
             current_time = time.time()
             if self.screen == "creature_select" and self.face_detected:
                 if current_time - self.last_creature_reminder > 10:
@@ -387,11 +357,9 @@ class UIController:
                 if current_time - self.last_capture_reminder > 10:
                     self._play_sound(os.path.join(PATHS['SOUNDCLIPS'], 'press_button_to_capture.mp3'))
                     self.last_capture_reminder = current_time
-
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 self.quit_flag = True
-
         self.cleanup()
 
     def _play_sound(self, sound_file):
@@ -412,7 +380,6 @@ class UIController:
             if self.frame_img.shape[:2] != (self.h, self.w):
                 print(f"Warning: Frame image size mismatch; resizing to {self.w}x{self.h}")
                 self.frame_img = cv2.resize(self.frame_img, (self.w, self.h), interpolation=cv2.INTER_AREA)
-
         if self.frame_img.shape[2] == 4:
             b, g, r, a = cv2.split(self.frame_img)
             alpha = a / 255.0
@@ -422,7 +389,7 @@ class UIController:
             img[:] = self.frame_img
 
     def _handle_fade(self):
-        pass  # Placeholder if fade logic needed
+        pass # Placeholder if fade logic needed
 
     def cleanup(self):
         if self.preview_cap:

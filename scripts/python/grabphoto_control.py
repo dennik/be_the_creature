@@ -1,9 +1,9 @@
 # grabphoto_control.py
-# Version: 2.61
+# Version: 2.62
 # Changes:
+# - v2.62 (2025-12-10): Added call to xmp_generator.py after photo capture in capture_photos(). Modified initialize_cameras() to return both preview_cap and best_index. Updated capture_photos() to accept best_index as parameter and pass it to xmp_generator. Retained previous changes.
 # - v2.61 (2025-12-09): Changed camera grouping in capture_photos to two groups of 9 and 8 for more parallelism, aiming to minimize capture time by reducing sequential steps. Assumes hardware can handle larger concurrent reads without bandwidth issues.
 # - v2.60 (2025-12-09): Fixed bug in initialize_cameras: Removed erroneous else: cap.release() continue under if score > best_ssim_score, which was incorrectly added in v2.59 and caused only progressively better SSIM cameras to be appended (resulting in fewer than 17 cameras). Now appends all successfully initialized cameras while selecting the best for preview. Also fixed not ref_gray case: Append only the kept cap (i==0), not released ones.
-# - v2.59 (2025-12-09): Commented out debug prints during capture; set DEBUG_TIMING=False to silence timings.
 
 import sys
 import os
@@ -164,6 +164,7 @@ def initialize_cameras(ui):
         if cameras:
             preview_cap = cameras[0][1]
             ui.preview_cap = preview_cap
+            best_index = 0
             print("No best SSIM; fallback to first camera.", flush=True)
         if ui:
             ui.update_message("Preview on camera 0 (fallback)")
@@ -172,9 +173,9 @@ def initialize_cameras(ui):
         init_duration = time.time() - init_start
         print(f"Init cameras total: {init_duration:.2f}s", flush=True)
 
-    return preview_cap
+    return preview_cap, best_index
 
-def capture_photos():
+def capture_photos(best_index):
     start_time = time.time()
     user_id = load_user_counter() + 1
     timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -207,6 +208,9 @@ def capture_photos():
             t.start()
     for t in threads:
         t.join()
+
+    # Call xmp_generator after photos are saved
+    subprocess.call(["python", "xmp_generator.py", photos_dir, str(best_index)])
 
     save_user_counter(user_id)
 
@@ -250,7 +254,7 @@ def main():
             ui_duration = time.time() - ui_start
             print(f"UI init: {ui_duration:.2f}s", flush=True)
 
-        preview_cap = initialize_cameras(ui)
+        preview_cap, best_index = initialize_cameras(ui)
         if not cameras:
             return
 
@@ -266,7 +270,7 @@ def main():
         loop_start = time.time()
 
         def on_capture_wrapper():
-            user_id = capture_photos()
+            user_id = capture_photos(best_index)
             ui.user_id = user_id  # NEW: Set for UI processing
             return user_id
 

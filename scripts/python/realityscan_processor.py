@@ -1,9 +1,9 @@
 # realityscan_processor.py
-# Version: 1.26
+# Version: 1.27
 # Changes:
+# - v1.27 (2025-12-10): Replaced -setReconstructionRegionAuto with -setReconstructionRegion to import custom reconstructionregion.rsbox from photogrammetry root (PATHS['BASE']).
 # - v1.26 (2025-12-09): Added -setReconstructionRegionAuto after -align to tighten reconstruction box around user. Commented out debug/console prints during session (retained queue.put and essential errors).
 # - v1.25 (2025-12-09): Simplified CLI commands per user request: Removed -generateAIMasks, -setReconstructionRegionAuto, -selectMaximalComponent, -cleanModel, -save. Direct export to 3dmodel (no temp_output). Moved pre-clean to before Popen. This speeds up processing by skipping non-essential steps.
-# - v1.24 (2025-12-04): To ensure progress always reaches 100 before completion (for visual purposes, even if count < total_steps), added a check after the loop: if current percent <100, explicitly put(100) before final put(100). Retained existing final put(100) for redundancy.
 
 import os
 import shutil
@@ -63,6 +63,8 @@ class RealityScanProcessor:
                 shutil.rmtree(item)
                 # print(f"Cleaned old subdir from output_dir: {item.name}")  # Commented out debug print
 
+        rsbox_path = os.path.join(PATHS['BASE'], "reconstructionregion.rsbox")
+
         command = [
             self.rs_path,
             "-newScene",
@@ -70,7 +72,7 @@ class RealityScanProcessor:
             "-printProgress",
             "-addFolder", str(self.photos_dir),
             "-align",
-            "-setReconstructionRegionAuto",
+            "-setReconstructionRegion", rsbox_path,
             "-set", "mvsNormalDownscaleFactor=4",
             "-set", "mvsDefaultGroupingFactor=2",
             "-calculateNormalModel",

@@ -1,9 +1,9 @@
 # grabphoto_control.py
-# Version: 2.62
+# Version: 2.63
 # Changes:
+# - v2.63 (2025-12-12): Replaced xmp_generator.py call with direct copy of preview_camera.xmp from scripts/python to photos_dir, renamed to match the preview camera's JPG file. Retained previous changes.
 # - v2.62 (2025-12-10): Added call to xmp_generator.py after photo capture in capture_photos(). Modified initialize_cameras() to return both preview_cap and best_index. Updated capture_photos() to accept best_index as parameter and pass it to xmp_generator. Retained previous changes.
 # - v2.61 (2025-12-09): Changed camera grouping in capture_photos to two groups of 9 and 8 for more parallelism, aiming to minimize capture time by reducing sequential steps. Assumes hardware can handle larger concurrent reads without bandwidth issues.
-# - v2.60 (2025-12-09): Fixed bug in initialize_cameras: Removed erroneous else: cap.release() continue under if score > best_ssim_score, which was incorrectly added in v2.59 and caused only progressively better SSIM cameras to be appended (resulting in fewer than 17 cameras). Now appends all successfully initialized cameras while selecting the best for preview. Also fixed not ref_gray case: Append only the kept cap (i==0), not released ones.
 
 import sys
 import os
@@ -23,6 +23,7 @@ import json
 import subprocess
 from ui_controller import UIController
 from skimage.metrics import structural_similarity as ssim
+import shutil
 
 DEBUG_TIMING = False
 
@@ -209,8 +210,15 @@ def capture_photos(best_index):
     for t in threads:
         t.join()
 
-    # Call xmp_generator after photos are saved
-    subprocess.call(["python", "xmp_generator.py", photos_dir, str(best_index)])
+    # Copy preview_camera.xmp and rename to match preview JPG
+    source_xmp = os.path.join(PATHS['SCRIPTS_PYTHON'], 'preview_camera.xmp')
+    if os.path.exists(source_xmp):
+        preview_jpg = f"user_{user_id}_camera_{best_index}_{RESOLUTION}_{timestamp}.jpg"
+        xmp_dest = os.path.join(photos_dir, preview_jpg.replace('.jpg', '.xmp'))
+        shutil.copy(source_xmp, xmp_dest)
+        print(f"Copied XMP for preview camera {best_index} to {xmp_dest}")
+    else:
+        print(f"Warning: preview_camera.xmp not found at {source_xmp}")
 
     save_user_counter(user_id)
 

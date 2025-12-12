@@ -1,9 +1,9 @@
 # realityscan_processor.py
-# Version: 1.31
+# Version: 1.32
 # Changes:
+# - v1.32 (2025-12-12): Added retry logic in _run_realityscan: Up to 3 attempts on non-zero return code, with 5s delay between retries. Logs retry attempts. Proceeds only on success.
 # - v1.31 (2025-12-11): Enhanced CLI mode with debug prints: args parsing, user_dir resolution, processor init, thread start, and loop monitoring. Prints thread status every 5s in CLI wait loop.
 # - v1.30 (2025-12-11): Added extensive debug prints throughout: path resolutions, command prep, process monitoring, result handling, and Blender checks. Logs key variables and steps for troubleshooting.
-# - v1.29 (2025-12-11): Added debug prints around Blender launch: full command, path checks, and post-launch note. Temporarily capture subprocess output for debug (non-blocking via thread). Logs to user_dir/blender_debug.log.
 
 import os
 import shutil
@@ -98,39 +98,56 @@ class RealityScanProcessor:
         ]
         print(f"DEBUG: RealityScan command: {' '.join(command)}")
 
-        if self.progress_queue:
-            self.progress_queue.put(0)
-            print("DEBUG: Sent initial progress: 0")
-
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        print(f"DEBUG: Started RealityScan process (PID: {process.pid})")
-        count = 0
-        last_percent = 0
-
-        while process.poll() is None:
-            line = process.stdout.readline().strip()
-            if line:
-                if "[W:onnxruntime:" not in line:
-                    pass
-                if "#progress" in line.lower():
-                    count += 1
-                    if total_steps > 0:
-                        percent = min(100, int((count / total_steps) * 100))
-                    else:
-                        percent = 0
-                    print(f"DEBUG: Progress update - count: {count}, percent: {percent}")
-                    if self.progress_queue:
-                        self.progress_queue.put(percent)
-                    last_percent = percent
-
-        if last_percent < 100:
+        max_retries = 3  # Configurable retry limit
+        for attempt in range(1, max_retries + 1):
             if self.progress_queue:
-                self.progress_queue.put(100)
-            print("DEBUG: Forced final progress to 100")
+                self.progress_queue.put(0)
+                print("DEBUG: Sent initial progress: 0")
 
-        result = process.wait()
-        print(f"DEBUG: RealityScan exited with code: {result}")
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            print(f"DEBUG: Started RealityScan process (PID: {process.pid}) - Attempt {attempt}/{max_retries}")
+            count = 0
+            last_percent = 0
 
+            while process.poll() is None:
+                line = process.stdout.readline().strip()
+                if line:
+                    if "[W:onnxruntime:" not in line:
+                        pass
+                    if "#progress" in line.lower():
+                        count += 1
+                        if total_steps > 0:
+                            percent = min(100, int((count / total_steps) * 100))
+                        else:
+                            percent = 0
+                        print(f"DEBUG: Progress update - count: {count}, percent: {percent}")
+                        if self.progress_queue:
+                            self.progress_queue.put(percent)
+                        last_percent = percent
+
+            if last_percent < 100:
+                if self.progress_queue:
+                    self.progress_queue.put(100)
+                print("DEBUG: Forced final progress to 100")
+
+            result = process.wait()
+            print(f"DEBUG: RealityScan exited with code: {result}")
+
+            if result == 0:
+                print(f"DEBUG: RealityScan succeeded on attempt {attempt}")
+                break  # Success - exit retry loop
+            else:
+                print(f"Error: RealityScan failed with return code {result} on attempt {attempt}")
+                if self.progress_queue:
+                    self.progress_queue.put(-1)
+                if attempt < max_retries:
+                    print(f"DEBUG: Retrying in 5 seconds...")
+                    time.sleep(5)  # Delay before retry
+                else:
+                    print(f"DEBUG: Max retries ({max_retries}) reached. Aborting.")
+                    return  # Or raise an exception if preferred
+
+        # Proceed only on success
         if result == 0:
             if self.progress_queue:
                 self.progress_queue.put(100)

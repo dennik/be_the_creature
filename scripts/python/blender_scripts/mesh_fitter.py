@@ -1,12 +1,12 @@
 # mesh_fitter.py
-# Version: 2.3.0
+# Version: 2.7.0
 # Changes:
-# - v2.3.0 (2025-12-11): Switched OBJ import to bpy.ops.wm.obj_import for Blender 4.0+ compatibility. Explicitly create world if None before HDRI setup. Added debug for world creation.
-# - v2.2.0 (2025-12-11): Updated OBJ import to bpy.ops.wm.obj_import for Blender 4.0+ compatibility. Added -90° rotation on X axis to high_poly after import (with apply transforms). Added debug print for rotation.
-# - v2.1.0 (2025-12-11): Added debug prints at every major step (start, imports, renders, alignments, exports). Print paths and success/failure. Errors now printed with details before exit.
-# - v2.0.0 (2025-12-11): Complete refactor for integration with photogrammetry pipeline
+# - v2.7.0 (2025-12-12): Scaled high_poly to 200% after import and rotation (before applying transforms). Used proper scaling with apply.
+# - v2.6.0 (2025-12-12): Fixed AttributeError by replacing non-existent world_to_camera_view_ray with manual ray calculation using camera view_frame.
+# - v2.5.0 (2025-12-12): Fixed NameError by adding missing "import bpy_extras". Added explicit high_poly.hide_render = False in render_high_poly.
 
 import bpy
+import bpy_extras
 import sys
 import os
 import json
@@ -112,6 +112,10 @@ if not low_poly or not cam:
 
 print("DEBUG: Loaded low_poly and Camera.")
 
+# Explicitly set scene camera
+bpy.context.scene.camera = cam
+print("DEBUG: Set scene.camera to loaded Camera.")
+
 # -----------------------------
 # Import High-Poly
 # -----------------------------
@@ -132,9 +136,15 @@ print("DEBUG: Imported high_poly.")
 # Rotate high_poly -90° on X
 print("DEBUG: Rotating high_poly -90° on X.")
 high_poly.rotation_euler = (math.radians(-90), 0, 0)
+
+# Scale high_poly to 200%
+print("DEBUG: Scaling high_poly to 200%.")
+high_poly.scale = (2.0, 2.0, 2.0)
+
+# Apply rotation and scale
 bpy.context.view_layer.objects.active = high_poly
 bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
-print("DEBUG: Rotation applied.")
+print("DEBUG: Rotation and scale applied.")
 
 # -----------------------------
 # HDRI Lighting
@@ -177,6 +187,7 @@ def render_high_poly():
     temp_path = os.path.join(model_dir, "temp_render.png")
     bpy.context.scene.render.filepath = temp_path
     low_poly.hide_render = True
+    high_poly.hide_render = False
     bpy.ops.render.render(write_still=True)
     low_poly.hide_render = False
     print(f"DEBUG: Rendered to {temp_path}.")
@@ -209,11 +220,25 @@ with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landm
 print(f"DEBUG: Detected {len(landmarks_2d)} landmarks.")
 
 # -----------------------------
-# Project Landmarks
+# Accurate Ray from Camera using view_frame
 # -----------------------------
 print("DEBUG: Projecting landmarks.")
-def world_to_cam_view(pos):
-    return bpy_extras.object_utils.world_to_camera_view(bpy.context.scene, cam, pos)
+frame = cam.data.view_frame(scene=bpy.context.scene)
+top_left = frame[3]
+top_right = frame[0]
+bottom_left = frame[2]
+# bottom_right = frame[1] not needed
+
+def get_camera_ray(norm_x, norm_y):
+    """norm_x, norm_y from 0 to 1 (left to right, bottom to top)"""
+    # Interpolate frame corners
+    right_vec = top_right - top_left
+    up_vec = bottom_left - top_left
+    corner_vec = top_left + right_vec * norm_x + up_vec * norm_y
+    origin = cam.matrix_world.translation
+    direction = (cam.matrix_world @ corner_vec) - origin
+    direction.normalize()
+    return origin, direction
 
 kd = mathutils.kdtree.KDTree(len(high_poly.data.vertices))
 mw = high_poly.matrix_world
@@ -225,12 +250,13 @@ target_landmarks = []
 vertex_indices = []
 
 for px, py in landmarks_2d:
-    norm_x = px / w
-    norm_y = 1 - (py / h)
-    origin, direction = bpy_extras.object_utils.world_to_camera_view_ray(cam, norm_x, norm_y)
+    norm_x = px / (w - 1)
+    norm_y = 1 - (py / (h - 1))  # Flip Y for bottom-up
+    origin, direction = get_camera_ray(norm_x, norm_y)
     origin_local = mw.inverted() @ origin
     direction_local = mw.to_3x3().inverted() @ direction
-    hit, loc, _, idx = high_poly.closest_point_on_mesh(origin_local, direction=direction_local)
+    direction_local.normalize()
+    hit, loc, normal, index = high_poly.ray_cast(origin_local, direction_local)
     if hit:
         world_hit = mw @ loc
         _, nearest_idx, _ = kd.find(world_hit)
@@ -263,7 +289,7 @@ shutil.copy(align_json, model_dir)
 vertexalign.align_vertices()
 print("DEBUG: Alignment complete.")
 
-# Re-render
+# Re-render after alignment
 rendered_path = render_high_poly()
 
 # -----------------------------
@@ -315,7 +341,7 @@ bpy.ops.mesh.select_more()
 
 for face in bm.faces:
     for loop in face.loops:
-        loop[uv_layer].uv = world_to_cam_view(low_poly.matrix_world @ loop.vert.co)[:2]
+        loop[uv_layer].uv = bpy_extras.object_utils.world_to_camera_view(bpy.context.scene, cam, low_poly.matrix_world @ loop.vert.co)[:2]
 
 bmesh.update_edit_mesh(low_poly.data)
 bpy.ops.object.mode_set(mode='OBJECT')

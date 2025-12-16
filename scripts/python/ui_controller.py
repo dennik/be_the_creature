@@ -1,9 +1,9 @@
 # ui_controller.py
-# Version: 1.67
+# Version: 1.68
 # Changes:
+# - v1.68 (2025-12-15): Corrected init_window to create with WINDOW_NORMAL, move, resize, then set full screen for proper multi-monitor support.
 # - v1.67 (2025-12-09): Made return to creature_select immediate by setting pending_switch with time.time() (no 0.5s delay).
 # - v1.66 (2025-12-09): Removed current_progress reset from _return_to_creature_select to prevent visual reset before screen switch. Always draw progress number, including when percent==0.
-# - v1.65 (2025-12-09): Added condition to read preview frames only during "creature_select" and "capture" screens; skips during "processing".
 
 import sys
 import os
@@ -204,9 +204,10 @@ class UIController:
 
     def init_window(self, window_name='Capture App', x=0, y=0):
         self.window_name = window_name
-        cv2.namedWindow(window_name, cv2.WND_PROP_FULLSCREEN)
-        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         cv2.moveWindow(window_name, x, y)
+        cv2.resizeWindow(window_name, self.w, self.h)
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
         cv2.setMouseCallback(window_name, self._mouse_callback)
         canvas = np.zeros((self.h, self.w, 3), dtype=np.uint8)
         self._overlay_frame(canvas)

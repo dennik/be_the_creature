@@ -1,9 +1,9 @@
 # grabphoto_control.py
-# Version: 2.62
+# Version: 2.71
 # Changes:
-# - v2.62 (2025-12-10): Added call to xmp_generator.py after photo capture in capture_photos(). Modified initialize_cameras() to return both preview_cap and best_index. Updated capture_photos() to accept best_index as parameter and pass it to xmp_generator. Retained previous changes.
-# - v2.61 (2025-12-09): Changed camera grouping in capture_photos to two groups of 9 and 8 for more parallelism, aiming to minimize capture time by reducing sequential steps. Assumes hardware can handle larger concurrent reads without bandwidth issues.
-# - v2.60 (2025-12-09): Fixed bug in initialize_cameras: Removed erroneous else: cap.release() continue under if score > best_ssim_score, which was incorrectly added in v2.59 and caused only progressively better SSIM cameras to be appended (resulting in fewer than 17 cameras). Now appends all successfully initialized cameras while selecting the best for preview. Also fixed not ref_gray case: Append only the kept cap (i==0), not released ones.
+# - v2.71 (2025-12-16): Made capture_photos fully sequential (no threading/groups) to mimic standalone script: For each camera, read 20 frames with 0.1s delay, save last successful as user_{id}_camera_{i}_16MP_{timestamp}.jpg, del frame. Then rename based on mapping. Retained sequential init save phase. Retained previous changes.
+# - v2.70 (2025-12-16): To prevent locking: Split initialize_cameras into two phases—1) Sequential init/save/release for frames (standalone-style). 2) Re-open all caps for preview/capture. Reverted to CAP_MSMF with auto_exposure=0.75. Capture in groups of 3. Added time.sleep(0.2) between opens. Retained previous changes.
+# - v2.69 (2025-12-16): Changed backend to CAP_DSHOW for VideoCapture to address MSMF hanging issues with multiple/high-res cameras. Removed auto_exposure set (DShow uses different values; rely on default auto). Added time.sleep(1) after init saves before running mapper for IO settle. In capture_photos, made groups smaller (groups of 4) for less concurrent load. Retained previous changes.
 
 import sys
 import os
@@ -22,16 +22,14 @@ import mediapipe_landmarks
 import json
 import subprocess
 from ui_controller import UIController
-from skimage.metrics import structural_similarity as ssim
+from pathlib import Path
 
 DEBUG_TIMING = False
 
-RESOLUTION = '8MP'
-width, height = 3840, 2160
+RESOLUTION = '16MP'
+width, height = 4656, 3496
 
-MANUAL_EXPOSURE = 0.06
-
-PREVIEW_ROTATE = False
+PREVIEW_ROTATE = True
 
 PREVIEW_MIRROR = True
 
@@ -44,16 +42,10 @@ BASE_DIR = PATHS['BASE']
 script_dir = os.path.dirname(os.path.abspath(__file__))
 graphics_dir = PATHS['GRAPHICS']
 
-ref_image_path = os.path.join(graphics_dir, 'preview_photo.jpg')
-ref_image = cv2.imread(ref_image_path, cv2.IMREAD_GRAYSCALE)
-if ref_image is None:
-    print(f"Warning: Failed to load reference image at {ref_image_path}. SSIM detection disabled.")
-    ref_gray = None
-else:
-    ref_gray = ref_image
+INIT_FRAMES_DIR = os.path.join(BASE_DIR, 'initialization_frames')
+os.makedirs(INIT_FRAMES_DIR, exist_ok=True)
 
-SAVE_INIT_PHOTOS = False
-INIT_PHOTO_DIR = PATHS['INIT_PHOTOS']
+MAPPING_JSON = os.path.join(INIT_FRAMES_DIR, 'camera_mapping.json')
 
 cameras = []
 capture_lock = threading.Lock()
@@ -86,96 +78,124 @@ def get_monitor_rects():
     EnumDisplayMonitors(None, None, MonitorEnumProc(callback), 0)
     return monitors
 
-def initialize_cameras(ui):
-    init_start = time.time()
-    preview_cap = None
-    best_ssim_score = -1
-    best_index = -1
-    best_cap = None
+def load_mapping():
+    if os.path.exists(MAPPING_JSON):
+        with open(MAPPING_JSON, 'r') as f:
+            return json.load(f)
+    else:
+        print(f"Warning: {MAPPING_JSON} not found. Using default mapping (identity).")
+        return {i: i for i in range(17)}
 
-    if ref_gray is None:
-        print("SSIM disabled; fallback to first camera for preview.")
-    
-    if SAVE_INIT_PHOTOS:
-        os.makedirs(INIT_PHOTO_DIR, exist_ok=True)
-    
+def save_init_frames_sequential():
+    jpg_saved = []
     for i in range(17 if not QUICK_INIT else 1):
-        cam_start = time.time()
-        cap = cv2.VideoCapture(i)
+        cap = cv2.VideoCapture(i, cv2.CAP_MSMF)
         if not cap.isOpened():
-            print(f"Camera {i} failed to open.", flush=True)
+            print(f"Camera {i}: Failed to open during init save.", flush=True)
             continue
 
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        cap.set(cv2.CAP_PROP_EXPOSURE, MANUAL_EXPOSURE)
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
 
-        stable = False
-        for _ in range(30):
+        actual_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        actual_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        actual_exposure = cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)
+        print(f"Camera {i}: Actual resolution {actual_width}x{actual_height}, auto exposure {actual_exposure}", flush=True)
+
+        last_frame = None
+        success_count = 0
+        for _ in range(20):
             ret, frame = cap.read()
             if ret and frame is not None:
-                stable = True
-            time.sleep(0.033)
+                last_frame = frame
+                success_count += 1
+            time.sleep(0.1)
 
-        if not stable:
-            print(f"Camera {i} no stable frame after stabilization.", flush=True)
-            cap.release()
+        if last_frame is not None:
+            init_path = os.path.join(INIT_FRAMES_DIR, f"camera_{i}_{RESOLUTION}.jpg")
+            if cv2.imwrite(init_path, last_frame):
+                print(f"Camera {i}: Saved init frame to {init_path}.", flush=True)
+                time.sleep(0.1)
+                jpg_saved.append(i)
+            del last_frame
+
+        cap.release()
+        print(f"Camera {i}: Released after init save.", flush=True)
+        time.sleep(0.2)  # Delay between cameras
+
+    return jpg_saved
+
+def open_all_cameras():
+    for i in range(17 if not QUICK_INIT else 1):
+        cap = cv2.VideoCapture(i, cv2.CAP_MSMF)
+        if not cap.isOpened():
+            print(f"Camera {i}: Failed to open during app init.", flush=True)
             continue
 
-        if ref_gray is not None:
-            ret, frame = cap.read()
-            if ret and frame is not None:
-                if SAVE_INIT_PHOTOS:
-                    init_path = os.path.join(INIT_PHOTO_DIR, f"init_camera_{i}.jpg")
-                    cv2.imwrite(init_path, frame)
-                    print(f"Saved init photo for camera {i} to {init_path}", flush=True)
-                
-                gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                score = ssim(ref_gray, gray_frame, data_range=gray_frame.max() - gray_frame.min())
-                ssim_start = time.time() if DEBUG_TIMING else None
-                if DEBUG_TIMING:
-                    ssim_duration = time.time() - ssim_start
-                    print(f"Camera {i} SSIM: {ssim_duration:.2f}s", flush=True)
-                
-                if score > best_ssim_score:
-                    best_ssim_score = score
-                    best_index = i
-                    best_cap = cap
-            else:
-                print(f"Camera {i} failed post-stab read for SSIM.", flush=True)
-        else:
-            if i == 0:
-                best_cap = cap
-            else:
-                cap.release()
-                continue  # Skip append for released caps
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
 
         cameras.append((i, cap))
-        if DEBUG_TIMING:
-            cam_duration = time.time() - cam_start
-            print(f"Camera {i} init: {cam_duration:.2f}s", flush=True)
+        time.sleep(0.2)  # Delay between opens
 
-    if best_cap:
-        preview_cap = best_cap
-        ui.preview_cap = preview_cap
-        if ui:
-            ui.update_message(f"Preview on camera {best_index} (SSIM: {best_ssim_score:.2f})")
-    else:
+def initialize_cameras(ui):
+    init_start = time.time()
+    preview_cap = None
+    best_index = -1
+
+    # Phase 1: Save init frames sequentially with release
+    jpg_saved = save_init_frames_sequential()
+
+    jpg_count = len(jpg_saved)
+    if jpg_count == 0:
+        print("Error: No init frames saved. No cameras initialized successfully.")
+        return None
+    elif jpg_count < 17:
+        print(f"Warning: Only {jpg_count} init frames saved (expected 17). Mapping may be incomplete.")
+
+    time.sleep(1)  # Wait for IO to settle
+
+    # Run mapper
+    print("Running init_camera_mapper.py to generate/overwrite mapping...")
+    subprocess.call(["python", "init_camera_mapper.py"])
+    time.sleep(0.5)
+    mapping = load_mapping()
+
+    # Phase 2: Open all for app
+    open_all_cameras()
+
+    # Find preview
+    for orig, phys in mapping.items():
+        if phys == 6:
+            best_index = orig
+            for idx, cap in cameras:
+                if idx == orig:
+                    preview_cap = cap
+                    break
+            break
+
+    if preview_cap is None:
         if cameras:
             preview_cap = cameras[0][1]
-            ui.preview_cap = preview_cap
             best_index = 0
-            print("No best SSIM; fallback to first camera.", flush=True)
+            print("No physical 6 found; fallback to camera 0.", flush=True)
         if ui:
             ui.update_message("Preview on camera 0 (fallback)")
+
+    if preview_cap:
+        ui.preview_cap = preview_cap
+        if ui:
+            ui.update_message(f"Preview on camera {best_index} (physical 6)")
 
     if DEBUG_TIMING:
         init_duration = time.time() - init_start
         print(f"Init cameras total: {init_duration:.2f}s", flush=True)
 
-    return preview_cap, best_index
+    return preview_cap
 
-def capture_photos(best_index):
+def capture_photos():
     start_time = time.time()
     user_id = load_user_counter() + 1
     timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -184,40 +204,48 @@ def capture_photos(best_index):
     photos_dir = os.path.join(user_dir, 'photos')
     os.makedirs(photos_dir, exist_ok=True)
 
-    # print(f"Capturing photos for user_{user_id} → {photos_dir}")  # Commented out debug print
+    mapping = load_mapping()
 
-    def capture_group(camera_list, lock):
-        for i, cap in camera_list:
-            cam_start = time.time()
-            with capture_lock:
-                ret, frame = cap.read()
+    # Sequential capture like standalone
+    for i, cap in cameras:
+        cam_start = time.time()
+
+        # Read 20 frames, keep the last successful one
+        last_frame = None
+        success_count = 0
+        for _ in range(20):
+            ret, frame = cap.read()
             if ret and frame is not None:
-                filename = f"user_{user_id}_camera_{i}_{RESOLUTION}_{timestamp}.jpg"
-                cv2.imwrite(os.path.join(photos_dir, filename), frame)
-            if DEBUG_TIMING:
-                cam_duration = time.time() - cam_start
-                print(f"Camera {i} read/write: {cam_duration:.2f}s", flush=True)
+                last_frame = frame
+                success_count += 1
+            time.sleep(0.1)
 
-    camera_groups = [cameras[0:9], cameras[9:17]]
-    threads = []
-    lock = threading.Lock()
-    for group in camera_groups:
-        if group:
-            t = threading.Thread(target=capture_group, args=(group, lock))
-            threads.append(t)
-            t.start()
-    for t in threads:
-        t.join()
+        if last_frame is not None:
+            print(f"Camera {i}: Successfully read {success_count}/20 frames; grabbing the last one (shape: {last_frame.shape}).", flush=True)
+            orig_filename = f"user_{user_id}_camera_{i}_{RESOLUTION}_{timestamp}.jpg"
+            orig_path = os.path.join(photos_dir, orig_filename)
+            if cv2.imwrite(orig_path, last_frame):
+                print(f"Camera {i}: Saved photo to {orig_path}.", flush=True)
+                time.sleep(0.1)
 
-    # Call xmp_generator after photos are saved
-    subprocess.call(["python", "xmp_generator.py", photos_dir, str(best_index)])
+                phys = mapping.get(i, i)
+                phys_str = f"{phys:02d}" if phys < 10 else str(phys)
+                new_filename = orig_filename.replace(f'_camera_{i}_', f'_camera_{phys}_')
+                new_path = os.path.join(photos_dir, new_filename)
+                os.rename(orig_path, new_path)
+                print(f"Renamed {orig_filename} to {new_filename}")
+            del last_frame
+            print(f"Camera {i}: Cleared frame from memory.", flush=True)
+        else:
+            print(f"Camera {i}: No successful frames read after 20 attempts.", flush=True)
+
+        time.sleep(0.2)  # Delay between cameras
 
     save_user_counter(user_id)
 
     det_start = time.time()
     subprocess.Popen(["python", "eye_color_detector.py", str(user_id), photos_dir])
     subprocess.Popen(["python", "facial_hair_detector.py", str(user_id), photos_dir])
-    # REMOVED: No processor launch here—UI handles via class/queue
 
     if DEBUG_TIMING:
         det_duration = time.time() - det_start
@@ -227,7 +255,7 @@ def capture_photos(best_index):
         duration = time.time() - start_time
         print(f"Capture photos total: {duration:.2f}s", flush=True)
     
-    return user_id  # NEW: Return user_id for UI to start processor
+    return user_id
 
 def release_cameras():
     for _, cap in cameras:
@@ -254,7 +282,7 @@ def main():
             ui_duration = time.time() - ui_start
             print(f"UI init: {ui_duration:.2f}s", flush=True)
 
-        preview_cap, best_index = initialize_cameras(ui)
+        preview_cap = initialize_cameras(ui)
         if not cameras:
             return
 
@@ -270,7 +298,7 @@ def main():
         loop_start = time.time()
 
         def on_capture_wrapper():
-            user_id = capture_photos(best_index)
+            user_id = capture_photos()
             ui.user_id = user_id  # NEW: Set for UI processing
             return user_id
 

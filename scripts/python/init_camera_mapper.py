@@ -1,9 +1,9 @@
 # init_camera_mapper.py
-# Version: 1.4
+# Version: 1.5
 # Changes:
+# - v1.5 (2025-12-16): Reversed row_points sort by local_x (reverse=True) to flip X axis assignment per row (e.g., 0↔3, 1↔2). Retained previous.
 # - v1.4 (2025-12-16): Updated parsing to use regex r'camera_(\d+)' for camera index from base_name, fixing skips for filenames like "camera_0_16MP". Removed rename_files_based_on_mapping since not needed (per initial request). Retained previous.
 # - v1.3 (2025-12-16): Updated parsing to use regex r'camera_(\d+)' for camera index from base_name, fixing IndexError for filenames like "camera_0_16MP". Updated warning messages for clarity. Retained previous.
-# - v1.2 (2025-12-16): Fixed CLI command: Changed "-exportXMPs photos_dir" to "-exportXMP" (no 's', no directory parameter, as per docs; exports to image folder automatically). Retained previous.
 
 import sys
 import os
@@ -350,9 +350,9 @@ def compute_mapping(photos_dir):
         if len(row_points) != expected:
             print(f"Warning: Row {row_idx+1} has {len(row_points)} cameras (expected {expected}). Proceeding with partial assignment.")
 
-        # Sort by increasing local_x (low x left = low phys left)
-        row_points.sort(key=lambda p: p['local_x'], reverse=False)
-        print(f"DEBUG: Sorted row {row_idx+1} by local_x asc: orig {[p['orig'] for p in row_points]}, local_x {[p['local_x'] for p in row_points]}")
+        # Sort by decreasing local_x to flip X axis (high x left)
+        row_points.sort(key=lambda p: p['local_x'], reverse=True)
+        print(f"DEBUG: Sorted row {row_idx+1} by local_x desc: orig {[p['orig'] for p in row_points]}, local_x {[p['local_x'] for p in row_points]}")
 
         phys_ids = phys_id_groups[row_idx]
         for i, point in enumerate(row_points):

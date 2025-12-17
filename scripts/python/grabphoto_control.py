@@ -1,9 +1,9 @@
 # grabphoto_control.py
-# Version: 2.74
+# Version: 2.73
 # Changes:
-# - v2.74 (2025-12-16): Moved skip_remap flag check to top for visibility. Retained previous changes.
-# - v2.73 (2025-12-16): Added --skip-remap CLI flag to skip init frame saving and mapper run in initialize_cameras (still loads existing MAPPING_JSON for preview selection). Retained previous changes.
+# - v2.73 (2025-12-16): Pivoted to SSIM-based mapping: Deleted all old remapping code/flags (init_camera_mapper.py, SKIP_REMAP). In initialize_cameras, after saving init frames, call ssim_camera_mapper.py to generate ssim_camera_mapping.json. Updated MAPPING_JSON to use this new file. Retained previous changes.
 # - v2.72 (2025-12-16): Added copy_pre_aligned_xmp(photos_dir) to copy/rename XMPs from aligned_xmp dir after photos saved/renamed, before detectors. Retained previous changes.
+# - v2.71 (2025-12-16): In capture_photos, added wait loop (up to 10s) after threads join to confirm >=17 .jpg files exist before launching detectors, ensuring they see complete set. Retained previous changes.
 
 import sys
 import os
@@ -41,9 +41,6 @@ TEST_READ_FRAMES = False
 
 QUICK_INIT = False
 
-# CLI flag: --skip-remap to skip init remapping (frame saving + mapper run)
-SKIP_REMAP = '--skip-remap' in sys.argv
-
 BASE_DIR = PATHS['BASE']
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -52,7 +49,7 @@ graphics_dir = PATHS['GRAPHICS']
 INIT_FRAMES_DIR = os.path.join(BASE_DIR, 'initialization_frames')
 os.makedirs(INIT_FRAMES_DIR, exist_ok=True)
 
-MAPPING_JSON = os.path.join(INIT_FRAMES_DIR, 'camera_mapping.json')
+MAPPING_JSON = os.path.join(INIT_FRAMES_DIR, 'ssim_camera_mapping.json')
 
 ALIGNED_XMP_DIR = os.path.join(BASE_DIR, 'aligned_xmp')
 
@@ -91,7 +88,7 @@ def load_mapping():
     if os.path.exists(MAPPING_JSON):
         with open(MAPPING_JSON, 'r') as f:
             data = json.load(f)
-            return {int(k): v for k, v in data.items()}
+            return {int(k): int(v) for k, v in data.items()}
     else:
         print(f"Warning: {MAPPING_JSON} not found. Using default mapping (identity).")
         return {i: i for i in range(17)}
@@ -126,40 +123,38 @@ def initialize_cameras(ui):
             cap.release()
             continue
 
-        if not SKIP_REMAP:
-            frame_saved = False
-            for attempt in range(5):
-                ret, frame = cap.read()
-                if ret and frame is not None:
-                    init_path = os.path.join(INIT_FRAMES_DIR, f"init_camera_{i}.jpg")
-                    if cv2.imwrite(init_path, frame):
-                        print(f"Saved init frame for camera {i} to {init_path}", flush=True)
-                        frame_saved = True
-                    else:
-                        print(f"Failed to write init frame for camera {i} to {init_path}")
-                    break
-                time.sleep(0.033)
-            if not frame_saved:
-                print(f"Failed to read/save frame for camera {i} after retries.", flush=True)
+        frame_saved = False
+        for attempt in range(5):
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                init_path = os.path.join(INIT_FRAMES_DIR, f"init_camera_{i}.jpg")
+                if cv2.imwrite(init_path, frame):
+                    print(f"Saved init frame for camera {i} to {init_path}", flush=True)
+                    frame_saved = True
+                else:
+                    print(f"Failed to write init frame for camera {i} to {init_path}")
+                break
+            time.sleep(0.033)
+        if not frame_saved:
+            print(f"Failed to read/save frame for camera {i} after retries.", flush=True)
 
         cameras.append((i, cap))
         if DEBUG_TIMING:
             cam_duration = time.time() - cam_start
             print(f"Camera {i} init: {cam_duration:.2f}s", flush=True)
 
-    if not SKIP_REMAP:
-        # Check saved frames
-        jpg_count = len(list(Path(INIT_FRAMES_DIR).glob("*.jpg")))
-        if jpg_count == 0:
-            print("Error: No init frames saved. No cameras initialized successfully.")
-            return None
-        elif jpg_count < 17:
-            print(f"Warning: Only {jpg_count} init frames saved (expected 17). Mapping may be incomplete.")
+    # Check saved frames
+    jpg_count = len(list(Path(INIT_FRAMES_DIR).glob("*.jpg")))
+    if jpg_count == 0:
+        print("Error: No init frames saved. No cameras initialized successfully.")
+        return None
+    elif jpg_count < 17:
+        print(f"Warning: Only {jpg_count} init frames saved (expected 17). Mapping may be incomplete.")
 
-        # Always run mapper to overwrite old mapping
-        print("Running init_camera_mapper.py to generate/overwrite mapping...")
-        subprocess.call(["python", "init_camera_mapper.py"])
-        mapping = load_mapping()  # Reload after generation
+    # Run SSIM mapper
+    print("Running ssim_camera_mapper.py to generate mapping...")
+    subprocess.call(["python", "ssim_camera_mapper.py"])
+    mapping = load_mapping()  # Reload after generation
 
     # Find orig_idx for physical 6
     for orig, phys in mapping.items():

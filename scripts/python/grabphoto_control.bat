@@ -1,2 +1,3 @@
-python grabphoto_control.py --skip-remap
+python grabphoto_control.py  
+
 pause

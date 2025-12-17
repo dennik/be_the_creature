@@ -1,9 +1,9 @@
 # realityscan_processor.py
-# Version: 1.27
+# Version: 1.28
 # Changes:
+# - v1.28 (2025-12-17): Added "-update" after "-align" to update alignment before mesh generation, as per CLI docs.
 # - v1.27 (2025-12-10): Replaced -setReconstructionRegionAuto with -setReconstructionRegion to import custom reconstructionregion.rsbox from photogrammetry root (PATHS['BASE']).
 # - v1.26 (2025-12-09): Added -setReconstructionRegionAuto after -align to tighten reconstruction box around user. Commented out debug/console prints during session (retained queue.put and essential errors).
-# - v1.25 (2025-12-09): Simplified CLI commands per user request: Removed -generateAIMasks, -setReconstructionRegionAuto, -selectMaximalComponent, -cleanModel, -save. Direct export to 3dmodel (no temp_output). Moved pre-clean to before Popen. This speeds up processing by skipping non-essential steps.
 
 import os
 import shutil
@@ -72,6 +72,7 @@ class RealityScanProcessor:
             "-printProgress",
             "-addFolder", str(self.photos_dir),
             "-align",
+            "-update",
             "-setReconstructionRegion", rsbox_path,
             "-set", "mvsNormalDownscaleFactor=4",
             "-set", "mvsDefaultGroupingFactor=2",
